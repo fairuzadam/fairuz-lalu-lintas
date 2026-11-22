@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simulator Lampu Lalu Lintas</title>
+<style>
+:root{
+  --bg:#e8ebe4; --ink:#1d2327; --panel:#f7f8f4; --muted:#5c666b;
+  --red:#e5484d; --yel:#f5b82e; --grn:#2fb86b; --off:#c9cdc6;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#171b1e; --ink:#e6e9e3; --panel:#22282c; --muted:#9aa4a8; --off:#3a4146; }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+  min-height:100vh;display:flex;flex-direction:column;align-items:center;gap:12px;padding:16px}
+header,.bar{width:100%;max-width:720px}
+header{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+h1{font-size:1.15rem;margin:0}
+.status{font-variant-numeric:tabular-nums;font-size:.95rem;color:var(--muted)}
+.status b{color:var(--ink)}
+canvas{width:100%;max-width:720px;aspect-ratio:1;border-radius:10px;display:block;background:#cfd6c8}
+.bar{background:var(--panel);border-radius:10px;padding:10px 12px;display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:8px;font-size:.85rem}
+.chip{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;background:var(--bg)}
+.dot{width:12px;height:12px;border-radius:50%;background:var(--off);flex:none}
+.chip.on .dot.r{background:var(--red)} .chip.on .dot.y{background:var(--yel)} .chip.on .dot.g{background:var(--grn)}
+.chip code{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:600}
+#off{display:none;color:var(--red);font-weight:600}
+:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Simulator persimpangan</h1>
+  <div class="status"><span id="off">Server terputus</span> <span id="hud">menghubungkan…</span></div>
+</header>
+<canvas id="cv" width="720" height="720" aria-label="Simulasi persimpangan empat arah dengan lampu lalu lintas"></canvas>
+<div class="bar" id="io"></div>
+
+<script>
+const C = 360, W = 720, LEN = 34, CW = 18, STOP = 272;
+const cv = document.getElementById('cv'), g = cv.getContext('2d');
+const PHASE = {
+  NS_GREEN: 'Utara–Selatan hijau', NS_YELLOW: 'Utara–Selatan kuning', ALL_RED_1: 'Semua merah',
+  EW_GREEN: 'Timur–Barat hijau', EW_YELLOW: 'Timur–Barat kuning', ALL_RED_2: 'Semua merah', ALL_RED: 'Semua merah'
+};
+const YLABEL = ['U–S merah','U–S kuning','U–S hijau','T–B merah','T–B kuning','T–B hijau'];
+const YCLASS = ['r','y','g','r','y','g'];
+let st = null;
+
+async function poll(){
+  try{
+    const r = await fetch('/api/state', {cache:'no-store'});
+    st = await r.json();
+    document.getElementById('off').style.display = 'none';
+  }catch(e){
+    document.getElementById('off').style.display = 'inline';
+  }
+  hud();
+}
+setInterval(poll, 200); poll();
+
+function hud(){
+  if(!st) return;
+  const mode = st.emergency ? 'DARURAT (kedip kuning)' : (st.run ? st.mode : 'STOP');
+  const rem = (st.run && !st.emergency && st.mode === 'AUTO') ? ' · sisa <b>' + st.remaining.toFixed(1) + ' s</b>' : '';
+  document.getElementById('hud').innerHTML = '<b>' + mode + '</b> · ' + PHASE[st.phase] + rem;
+  document.getElementById('io').innerHTML = st.y.map((v,i) =>
+    '<div class="chip ' + (v ? 'on' : '') + '"><span class="dot ' + YCLASS[i] + '"></span><code>Y' + i + '</code>' + YLABEL[i] + '</div>'
+  ).join('');
+}
+
+// ---- mobil -------------------------------------------------------------
+// Jalur kiri (Indonesia). t = posisi depan mobil pada arah jalannya (0..720).
+const lanes = {S:[], N:[], E:[], W:[]};
+const colors = ['#2f6fb5','#c9702d','#7a8a3a','#8a4b7a','#e8e4d8','#3d8c8c'];
+
+function signal(dir){
+  if(!st) return 'stop';
+  if(st.emergency) return 'caution';
+  const ns = dir === 'S' || dir === 'N';
+  const y = st.y, i = ns ? 0 : 3;
+  if(y[i+2]) return 'go';
+  if(y[i+1]) return 'yellow';
+  return 'stop';
+}
+
+function step(dt){
+  if(!st) return;
+  for(const d in lanes){
+    const arr = lanes[d], sg = signal(d);
+    for(let i = 0; i < arr.length; i++){
+      const c = arr[i];
+      let allow = Infinity;
+      const mustStop = sg === 'stop' || (sg === 'yellow' && STOP - c.t > 34);
+      if(mustStop && c.t <= STOP + 1) allow = Math.max(STOP - c.t, 0);
+      if(i > 0) allow = Math.min(allow, arr[i-1].t - LEN - 10 - c.t);
+      const sp = c.v * (sg === 'caution' ? 0.55 : 1);
+      c.t += Math.min(sp * dt, Math.max(allow, 0));
+    }
+    while(arr.length && arr[0].t - LEN > W + 20) arr.shift();
+    if(Math.random() < dt * 0.5){
+      const last = arr[arr.length - 1];
+      if(!last || last.t - LEN > 10)
+        arr.push({t:0, v:110 + Math.random()*30, col:colors[Math.floor(Math.random()*colors.length)]});
+    }
+  }
+}
+
+function carRect(d, c){
+  if(d === 'S') return [C + 40 - CW/2, c.t - LEN, CW, LEN];
+  if(d === 'N') return [C - 40 - CW/2, W - c.t, CW, LEN];
+  if(d === 'E') return [c.t - LEN, C - 40 - CW/2, LEN, CW];
+  return [W - c.t, C + 40 - CW/2, LEN, CW];
+}
+
+// ---- gambar ------------------------------------------------------------
+function head(x, y, on){ // on: 'r' | 'y' | 'g' | null
+  g.fillStyle = '#20262a'; g.beginPath(); g.roundRect(x, y, 24, 66, 6); g.fill();
+  const cols = [['r','#e5484d'],['y','#f5b82e'],['g','#2fb86b']];
+  cols.forEach(([k, col], i) => {
+    g.beginPath(); g.arc(x + 12, y + 12 + i*21, 7, 0, 7);
+    g.fillStyle = on === k ? col : '#3b4247'; g.fill();
+  });
+}
+function lit(i){ // i = 0 (U-S) atau 3 (T-B)
+  if(!st) return null;
+  return st.y[i] ? 'r' : st.y[i+1] ? 'y' : st.y[i+2] ? 'g' : null;
+}
+
+function draw(){
+  g.clearRect(0, 0, W, W);
+  g.fillStyle = '#cfd6c8'; g.fillRect(0, 0, W, W);
+  g.fillStyle = '#3a4046';
+  g.fillRect(0, C - 80, W, 160); g.fillRect(C - 80, 0, 160, W);
+  // marka tengah
+  g.strokeStyle = '#f1eee2'; g.lineWidth = 3; g.setLineDash([16, 14]);
+  [[0, C, C - 84, C],[C + 84, C, W, C],[C, 0, C, C - 84],[C, C + 84, C, W]].forEach(([a,b,c2,d]) => {
+    g.beginPath(); g.moveTo(a, b); g.lineTo(c2, d); g.stroke();
+  });
+  g.setLineDash([]);
+  // garis henti
+  g.lineWidth = 6;
+  [[C, STOP, C + 80, STOP],[C - 80, W - STOP, C, W - STOP],[STOP, C - 80, STOP, C],[W - STOP, C, W - STOP, C + 80]].forEach(([a,b,c2,d]) => {
+    g.beginPath(); g.moveTo(a, b); g.lineTo(c2, d); g.stroke();
+  });
+  // mobil
+  for(const d in lanes) lanes[d].forEach(c => {
+    const [x, y, w, h] = carRect(d, c);
+    g.fillStyle = c.col; g.beginPath(); g.roundRect(x, y, w, h, 4); g.fill();
+    g.fillStyle = 'rgba(255,255,255,.35)';
+    if(d === 'E' || d === 'W') g.fillRect(x + h/2 + 2, y + 3, 10, h - 6); else g.fillRect(x + 3, y + w/2 + 2, w - 6, 10);
+  });
+  // lampu
+  const ns = lit(0), ew = lit(3);
+  head(C + 96, STOP - 74, ns); head(C - 96 - 24, W - STOP + 8, ns);
+  head(STOP - 36, C - 96 - 66, ew); head(W - STOP + 12, C + 96, ew);
+}
+
+let last = performance.now();
+(function frame(now){
+  const dt = Math.min((now - last) / 1000, 0.1); last = now;
+  step(dt); draw(); requestAnimationFrame(frame);
+})(last);
+</script>
+</body>
+</html>

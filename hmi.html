@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HMI Lampu Lalu Lintas</title>
+<style>
+:root{
+  --bg:#1c2328; --card:#27313a; --line:#3a4651; --ink:#e9eeea; --muted:#95a3ad;
+  --red:#e5484d; --yel:#f5b82e; --grn:#2fb86b; --off:#39434b; --blue:#4a90d9;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;padding:16px}
+main{max-width:860px;margin:0 auto;display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+header{max-width:860px;margin:0 auto 12px;display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+h1{font-size:1.15rem;margin:0}
+h2{font-size:.95rem;margin:0 0 10px;color:var(--muted);font-weight:600}
+section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
+.wide{grid-column:1/-1}
+#conn{font-size:.85rem;color:var(--grn)} #conn.bad{color:var(--red)}
+.big{font-size:3rem;font-weight:700;font-variant-numeric:tabular-nums;line-height:1}
+.sub{color:var(--muted);margin-top:6px;font-size:.9rem}
+.heads{display:flex;gap:24px;justify-content:space-around}
+.head{display:flex;flex-direction:column;align-items:center;gap:8px;font-size:.85rem;color:var(--muted)}
+.box{background:#14191d;border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:10px}
+.lamp{width:34px;height:34px;border-radius:50%;background:var(--off);position:relative}
+.lamp.on.r{background:var(--red)} .lamp.on.y{background:var(--yel)} .lamp.on.g{background:var(--grn)}
+.lamp small{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font:600 .7rem ui-monospace,Menlo,Consolas,monospace;color:rgba(0,0,0,.65)}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+button{font:inherit;font-weight:600;color:var(--ink);background:var(--off);border:2px solid var(--line);border-radius:8px;padding:10px 14px;cursor:pointer;min-height:44px}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.active{border-color:var(--ink)}
+.start{background:#1f6b45} .stop{background:#8c2f33} .emg{background:#8a6410}
+button small{display:block;font:500 .7rem ui-monospace,Menlo,Consolas,monospace;opacity:.8}
+label{display:flex;flex-direction:column;gap:4px;font-size:.85rem;color:var(--muted)}
+input{font:inherit;width:90px;padding:8px;border-radius:8px;border:1px solid var(--line);background:#14191d;color:var(--ink)}
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+td{padding:5px 6px;border-bottom:1px solid var(--line)}
+td:first-child{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:600;width:48px}
+.st{font-weight:700} .st.on{color:var(--grn)} .st.off{color:var(--muted)}
+#msg{min-height:1.2em;font-size:.85rem;color:var(--yel);margin-top:8px}
+:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+</style>
+</head>
+<body>
+<header>
+  <h1>HMI persimpangan</h1>
+  <span id="conn">terhubung</span>
+</header>
+<main>
+  <section>
+    <h2>Status</h2>
+    <div class="big" id="rem">–</div>
+    <div class="sub" id="phase">menghubungkan…</div>
+    <div class="sub" id="mode"></div>
+  </section>
+
+  <section>
+    <h2>Lampu (output PLC)</h2>
+    <div class="heads">
+      <div class="head"><div class="box" id="ns"></div>Utara–Selatan</div>
+      <div class="head"><div class="box" id="ew"></div>Timur–Barat</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Kontrol</h2>
+    <div class="row">
+      <button class="start" id="bStart">START<small>X0</small></button>
+      <button class="stop" id="bStop">STOP<small>X1</small></button>
+      <button class="emg" id="bEmg">DARURAT<small>X2</small></button>
+      <button id="bMode">MANUAL<small>X3</small></button>
+    </div>
+    <h2 style="margin-top:14px">Fase manual</h2>
+    <div class="row">
+      <button class="man" data-p="NS_GREEN">U–S hijau</button>
+      <button class="man" data-p="ALL_RED">Semua merah</button>
+      <button class="man" data-p="EW_GREEN">T–B hijau</button>
+    </div>
+    <div id="msg" role="status"></div>
+  </section>
+
+  <section>
+    <h2>Pengaturan timer (detik)</h2>
+    <div class="row">
+      <label>Hijau<input id="tGreen" type="number" min="1" max="60"></label>
+      <label>Kuning<input id="tYellow" type="number" min="1" max="60"></label>
+      <label>Semua merah<input id="tRed" type="number" min="1" max="60"></label>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="bTimes">Terapkan timer</button>
+      <button id="bReset">Reset</button>
+    </div>
+  </section>
+
+  <section class="wide">
+    <h2>Tabel I/O</h2>
+    <table id="io"></table>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const PHASE = {
+  NS_GREEN:'Utara–Selatan hijau', NS_YELLOW:'Utara–Selatan kuning', ALL_RED_1:'Semua merah',
+  EW_GREEN:'Timur–Barat hijau', EW_YELLOW:'Timur–Barat kuning', ALL_RED_2:'Semua merah', ALL_RED:'Semua merah'
+};
+const XLAB = ['X0 START','X1 STOP','X2 DARURAT','X3 MANUAL'];
+const YLAB = ['Y0 U–S merah','Y1 U–S kuning','Y2 U–S hijau','Y3 T–B merah','Y4 T–B kuning','Y5 T–B hijau'];
+let st = null;
+
+async function send(cmd, extra){
+  try{
+    const r = await fetch('/api/cmd', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({cmd, ...extra})});
+    const d = await r.json();
+    $('msg').textContent = d.ok ? '' : d.msg;
+  }catch(e){ $('msg').textContent = 'Gagal mengirim perintah'; }
+  poll();
+}
+
+function lamps(el, base){
+  el.innerHTML = ['r','y','g'].map((k,i) =>
+    '<div class="lamp ' + k + (st.y[base+i] ? ' on' : '') + '"><small>Y' + (base+i) + '</small></div>').join('');
+}
+
+function render(){
+  const auto = st.run && !st.emergency && st.mode === 'AUTO';
+  $('rem').textContent = auto ? st.remaining.toFixed(1) + ' s' : '–';
+  $('phase').textContent = PHASE[st.phase];
+  $('mode').textContent = st.emergency ? 'DARURAT: kedip kuning' : (st.run ? 'Mode ' + st.mode : 'Berhenti: semua merah');
+  lamps($('ns'), 0); lamps($('ew'), 3);
+  $('bStart').classList.toggle('active', st.run);
+  $('bStop').classList.toggle('active', !st.run);
+  $('bEmg').classList.toggle('active', st.emergency);
+  $('bMode').innerHTML = (st.mode === 'AUTO' ? 'MANUAL' : 'AUTO') + '<small>X3</small>';
+  $('bMode').classList.toggle('active', st.mode === 'MANUAL');
+  document.querySelectorAll('.man').forEach(b => b.disabled = st.mode !== 'MANUAL');
+  const ae = document.activeElement.id;
+  if(!['tGreen','tYellow','tRed'].includes(ae)){
+    $('tGreen').value = st.times.green; $('tYellow').value = st.times.yellow; $('tRed').value = st.times.allred;
+  }
+  $('io').innerHTML =
+    st.x.map((v,i) => '<tr><td>' + XLAB[i].split(' ')[0] + '</td><td>' + XLAB[i].split(' ')[1] + '</td><td class="st ' + (v ? 'on' : 'off') + '">' + (v ? 'ON' : 'OFF') + '</td></tr>').join('') +
+    st.y.map((v,i) => '<tr><td>' + YLAB[i].split(' ')[0] + '</td><td>' + YLAB[i].slice(3) + '</td><td class="st ' + (v ? 'on' : 'off') + '">' + (v ? 'ON' : 'OFF') + '</td></tr>').join('');
+}
+
+async function poll(){
+  try{
+    const r = await fetch('/api/state', {cache:'no-store'});
+    st = await r.json();
+    $('conn').textContent = 'terhubung'; $('conn').className = '';
+    render();
+  }catch(e){
+    $('conn').textContent = 'server terputus'; $('conn').className = 'bad';
+  }
+}
+
+$('bStart').onclick = () => send('start');
+$('bStop').onclick = () => send('stop');
+$('bEmg').onclick = () => send('emergency', {value: !st.emergency});
+$('bMode').onclick = () => send('mode', {value: st.mode === 'AUTO' ? 'MANUAL' : 'AUTO'});
+$('bReset').onclick = () => send('reset');
+$('bTimes').onclick = () => send('times', {green:+$('tGreen').value, yellow:+$('tYellow').value, allred:+$('tRed').value});
+document.querySelectorAll('.man').forEach(b => b.onclick = () => send('manual', {value:b.dataset.p}));
+
+setInterval(poll, 200); poll();
+</script>
+</body>
+</html>
